@@ -9,12 +9,8 @@ log = logging.getLogger(__name__)
 
 
 class NoseGAE(Plugin):
-    """
-    Activate this plugin to run tests in Google App Engine dev
-    environment. When the plugin is active, Google App Engine dev stubs, such
-    as the stub datastore, will be available, and application code will run in
-    a sandbox that restricts module loading in the same way as it is
-    restricted when running under GAE.
+    """Activate this plugin to run tests in Google App Engine dev environment. When the plugin is active,
+    Google App Engine dev stubs such as the datastore, memcache, taskqueue, and more can be made available.
     """
     name = 'gae'
 
@@ -35,11 +31,6 @@ class NoseGAE(Plugin):
             help='Set the path to the GAE datastore to use in tests. '
             'Note that when using an existing datastore directory, the '
             'datastore will not be cleared before testing begins.')
-        parser.add_option(
-            '--without-sandbox', default=True, action='store_false', dest='sandbox_enabled',
-            help='Enable this flag if you want to run your tests without '
-            'import module sandbox. This is most useful when you have a '
-            'conflicting nose plugin (such as coverage).')
 
     def configure(self, options, config):
         super(NoseGAE, self).configure(options, config)
@@ -51,13 +42,12 @@ class NoseGAE(Plugin):
                 "Python version must be 2.7 or greater, like the Google App Engine environment.  "
                 "Tests are running with: %s" % sys.version)
 
+        if options.gae_lib_root not in sys.path:
+            sys.path.append(options.gae_lib_root)
+
         self._app_path = options.gae_app or config.workingDir
-        self._gae_sdk_path = options.gae_lib_root
-        if self._gae_sdk_path not in sys.path:
-            sys.path.append(self._gae_sdk_path)
         self._data_path = options.gae_data or os.path.join(tempfile.gettempdir(),
                                                            'nosegae.sqlite3')
-        self.sandbox_enabled = options.sandbox_enabled
 
         if 'google' in sys.modules:
             # make sure an egg (e.g. protobuf) is not cached
@@ -67,43 +57,68 @@ class NoseGAE(Plugin):
             import appengine_config
         except ImportError:
             pass
+
         import dev_appserver
         dev_appserver.fix_sys_path()  # add paths to libs specified in app.yaml, etc
+
         from google.appengine.tools.devappserver2 import application_configuration
 
-        self.configuration = application_configuration.ApplicationConfiguration(
-            [self._app_path])
-        os.environ['APPLICATION_ID'] = self.configuration.app_id
+        # get the app id out of your app.yaml en stuff
+        configuration = application_configuration.ApplicationConfiguration([self._app_path])
 
-        # As of SDK 1.2.5 the dev_appserver.py aggressively adds some logging handlers.
-        # This removes the handlers but note that Nose will still capture logging and
-        # report it during failures.  See Issue 25 for more info.
-        rootLogger = logging.getLogger()
-        for handler in rootLogger.handlers:
-            if isinstance(handler, logging.StreamHandler):
-                rootLogger.removeHandler(handler)
+        os.environ['APPLICATION_ID'] = configuration.app_id
 
-    def beforeTest(self, *args):
+    def startTest(self, test):
+        """Initializes Testbed stubs based off of attributes of the executing test
+
+        allow tests to register and configure stubs by setting properties like
+        nosegae_<stub_name> and nosegae_<stub_name>_kwargs
+
+        Example
+
+        class MyTest(unittest.TestCase):
+            nosegae_datastore_v3 = True
+            nosegae_datastore_v3_kwargs = {
+              'datastore_file': '/tmp/nosegae.sqlite3,
+              'use_sqlite': True
+            }
+
+            def test_something(self):
+               entity = MyModel(name='NoseGAE')
+               entity.put()
+               self.assertNotNone(entity.key.id())
+
+        Args
+            :param google.appengine.ext.testbed.Testbed the_test: The unittest.TestCase being run
+        """
+        import testbed_patch
+        testbed_patch.patch()
         from google.appengine.ext import testbed
+
         self.testbed = testbed.Testbed()
         self.testbed.activate()
-        self.testbed.init_datastore_v3_stub()
-        self.testbed.init_memcache_stub()
-        # required for queue.yaml so the app knows about the task queue names
-        self.testbed.init_taskqueue_stub(root_path=self._app_path)
+        # Give the test access to the active testbed
+        the_test = test.test
+        the_test.testbed = self.testbed
 
-        # workaround to avoid prospective search complain until there is a proper
-        # testbed stub. see http://stackoverflow.com/questions/16026703/testbed-stub-for-google-app-engine-prospective-search
-        from google.appengine.api.prospective_search.prospective_search_stub \
-            import ProspectiveSearchStub
-        PROSPECTIVE_SEARCH_SERVICE_NAME = 'matcher'
-        testbed.SUPPORTED_SERVICES.append(PROSPECTIVE_SEARCH_SERVICE_NAME)
-        ps_data_file = os.path.join(os.path.split(self._data_path)[0],
-                                    'nosegae.ps')
-        ps_stub = ProspectiveSearchStub(
-            prospective_search_path=ps_data_file,
-            taskqueue_stub=self.testbed.get_stub(testbed.TASKQUEUE_SERVICE_NAME))
-        self.testbed._register_stub(PROSPECTIVE_SEARCH_SERVICE_NAME, ps_stub)
+        for stub_name, stub_init in testbed.INIT_STUB_METHOD_NAMES.iteritems():
+            if not getattr(the_test, 'nosegae_%s' % stub_name, False):
+                continue
+            stub_kwargs = getattr(the_test, 'nosegae_%s_kwargs' % stub_name, {})
+            if stub_name == testbed.TASKQUEUE_SERVICE_NAME:
+                # root_path is required so the stub can find queue.yaml
+                task_args = dict(root_path=self._app_path)
+                task_args.update(stub_kwargs)
+                stub_kwargs = task_args
+            elif stub_name == testbed.DATASTORE_SERVICE_NAME:
+                if not self.testbed.get_stub(testbed.MEMCACHE_SERVICE_NAME):
+                    # ndb requires memcache so enable it as well as the datastore_v3
+                    self.testbed.init_memcache_stub()
+                task_args = dict(datastore_file=self._data_path)
+                task_args.update(stub_kwargs)
+                stub_kwargs = task_args
+            getattr(self.testbed, stub_init)(**stub_kwargs)
 
-    def afterTest(self, *args):
+    def stopTest(self, test):
         self.testbed.deactivate()
+        del test.test.testbed

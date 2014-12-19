@@ -1,7 +1,8 @@
 from webtest import TestApp
-from helloworld import application
+import helloworld
 
-app = TestApp(application())
+app = TestApp(helloworld.app)
+
 
 def test_index():
     response = app.get('/')

@@ -5,7 +5,7 @@ import tempfile
 from nose.plugins.base import Plugin
 
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class NoseGAE(Plugin):
@@ -68,6 +68,8 @@ class NoseGAE(Plugin):
 
         os.environ['APPLICATION_ID'] = configuration.app_id
 
+        self.is_doctests = options.enable_plugin_doctest
+
     def startTest(self, test):
         """Initializes Testbed stubs based off of attributes of the executing test
 
@@ -120,9 +122,20 @@ class NoseGAE(Plugin):
                 stub_kwargs = task_args
             getattr(self.testbed, stub_init)(**stub_kwargs)
 
+        if self.is_doctests:
+            self._doctest_compat(the_test)
+
     def stopTest(self, test):
         self.testbed.deactivate()
         del test.test.testbed
+
+    def _doctest_compat(self, the_test):
+        """Enable compatibility with doctests by setting the current testbed into the doctest scope"""
+        try:
+            the_test._dt_test.globs['testbed'] = self.testbed
+        except AttributeError:
+            # not a nose.plugins.doctests.DocTestCase?
+            pass
 
     def _add_missing_stubs(self, testbed):
         """Monkeypatch the testbed for stubs that do not have an init method yet"""

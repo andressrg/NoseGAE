@@ -1,16 +1,9 @@
-import wsgiref.handlers
-from google.appengine.ext import webapp
+import webapp2
 
-class Hello(webapp.RequestHandler):
+
+class Hello(webapp2.RequestHandler):
     def get(self):
         self.response.headers['Content-Type'] = 'text/plain'
         self.response.out.write('Hello world!')
 
-def application():
-    return webapp.WSGIApplication([('/', Hello)], debug=True)
-        
-def main():
-    wsgiref.handlers.CGIHandler().run(application())
-
-if __name__ == '__main__':
-    main()
+app = webapp2.WSGIApplication([('/', Hello)], debug=True)

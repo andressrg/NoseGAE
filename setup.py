@@ -37,6 +37,6 @@ setup(
         'nose.plugins.0.10': ['nosegae = nosegae:NoseGAE']
         },
     py_modules=['nosegae'],
-    install_requires=['nose>=1.0'],
+    install_requires=['nose>=0.10.1'],
     # tests_require=['WebTest', 'trestle>=0.2a1', 'Mock']
     )
